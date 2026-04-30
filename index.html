@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YQN Studio 預約表單</title>
+    <!-- 引入 LINE LIFF SDK -->
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <!-- 移除 FullCalendar CSS -->
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 15px;
+            background-color: #f9f9f9;
+        }
+
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            text-align: center;
+            color: #333;
+        }
+
+        label {
+            display: block;
+            margin-top: 15px;
+            font-weight: bold;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 20px;
+            background-color: #000;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+        }
+
+        /* 區塊顯示控制 */
+        #calendar-section {
+            display: block;
+        }
+
+        #form-section {
+            display: none;
+        }
+
+        .slot-container {
+            margin-top: 15px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .slot-item {
+            margin: 10px 0;
+            font-size: 16px;
+        }
+
+        .slot-item input {
+            width: auto;
+            transform: scale(1.3);
+            margin-right: 10px;
+        }
+
+        .back-btn {
+            background-color: #777;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h2>YQN Studio 預約</h2>
+
+        <!-- 第 1 步：選擇日期與時段 -->
+        <div id="calendar-section">
+            <label for="dateSelect" style="margin-top: 0;">請選擇預約日期</label>
+            <select id="dateSelect" onchange="onDateSelect()">
+                <option value="">載入中...</option>
+            </select>
+
+            <div id="slot-area" class="slot-container">
+                <h3 id="selected-date-text">請選擇時段</h3>
+                <div id="slot-list"></div>
+                <button id="nextBtn" style="display:none;" onclick="goToForm()">下一步：填寫資料</button>
+            </div>
+        </div>
+
+        <!-- 第 2 步：填寫個人資料 -->
+        <div id="form-section">
+            <p style="text-align:center; color:#d4a373; font-weight:bold;">您選擇的時間：<span
+                    id="display-selected-time"></span></p>
+            <form id="bookingForm">
+                <label for="name">姓名</label>
+                <input type="text" id="name" required placeholder="請輸入姓名">
+
+                <label for="gender">性別</label>
+                <select id="gender" required>
+                    <option value="">請選擇</option>
+                    <option value="男生">男生</option>
+                    <option value="女生">女生</option>
+                </select>
+
+                <label for="birthday">生日 (西元)</label>
+                <input type="date" id="birthday" required>
+
+                <label for="phone">聯絡電話</label>
+                <input type="tel" id="phone" required placeholder="0912345678">
+
+                <label for="service">預約項目</label>
+                <select id="service" required>
+                    <option value="">請選擇</option>
+                    <option value="機器霧眉">機器霧眉</option>
+                    <option value="補色服務">補色服務</option>
+                </select>
+
+                <label for="experienced">是否曾做過霧眉？</label>
+                <select id="experienced" required>
+                    <option value="">請選擇</option>
+                    <option value="是">是</option>
+                    <option value="否">否</option>
+                </select>
+
+                <label for="message">留言</label>
+                <textarea id="message" rows="3" placeholder="如有任何問題請在此留言（非必填）..."></textarea>
+
+                <button type="button" id="submitBtn" onclick="submitForm()">確認送出預約</button>
+                <button type="button" class="back-btn" onclick="backToCalendar()">返回重選時間</button>
+            </form>
+        </div>
+    </div>
+
+
+    <script>
+        // 設定你的三個關鍵代碼
+        const LIFF_ID = '2009889898-kxdrRvXF';
+        // 這是你剛剛拉好的「四節車廂」Webhook（用來抓取營業時間）
+        const GET_TIME_WEBHOOK_URL = "https://hook.us2.make.com/q2pcug9l9xavlg5y9mktewc5ydggvedn";
+        // 這是你最早拉的「寫入預約紀錄」Webhook
+        const SUBMIT_BOOKING_WEBHOOK_URL = "https://hook.us2.make.com/2t6ijtym92vgl86xuxq4xenzdumpeezh";
+
+        let selectedDate = "";
+        let selectedTime = "";
+        let availableDatesData = []; // 儲存從 Make 抓取回來的資料
+
+        // 初始化 LIFF
+        async function initializeLiff() {
+            try { await liff.init({ liffId: LIFF_ID }); }
+            catch (err) { console.error('LIFF 初始化失敗', err); }
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            initializeLiff();
+            fetchAvailableDates();
+        });
+
+        // 從 Make 抓取可預約日期並填入下拉選單
+        function fetchAvailableDates() {
+            const dateSelect = document.getElementById('dateSelect');
+            
+            // 加上隨機時間戳記，避免瀏覽器讀到舊的錯誤快取
+            const fetchUrl = GET_TIME_WEBHOOK_URL + "?t=" + new Date().getTime();
+            
+            fetch(fetchUrl)
+                .then(response => response.json())
+                .then(data => {
+                    availableDatesData = data;
+                    
+                    // 清空選單並加入預設選項
+                    dateSelect.innerHTML = '<option value="">請選擇日期</option>';
+                    
+                    if (data.length === 0) {
+                        dateSelect.innerHTML = '<option value="">目前沒有可預約的日期</option>';
+                        return;
+                    }
+                    
+                    // 將資料逐一加入下拉選單
+                    data.forEach(item => {
+                        const option = document.createElement('option');
+                        option.value = item.date;
+                        option.textContent = item.date;
+                        dateSelect.appendChild(option);
+                    });
+                })
+                .catch(err => { 
+                    console.error("抓取時間失敗", err); 
+                    dateSelect.innerHTML = '<option value="">無法載入日期，請稍後再試</option>';
+                });
+        }
+
+        // 當使用者選擇日期時觸發
+        function onDateSelect() {
+            const dateSelect = document.getElementById('dateSelect');
+            selectedDate = dateSelect.value;
+            
+            const area = document.getElementById('slot-area');
+            const nextBtn = document.getElementById('nextBtn');
+            
+            // 如果沒有選擇任何日期，隱藏時段選擇區
+            if (!selectedDate) {
+                area.style.display = 'none';
+                nextBtn.style.display = 'none';
+                selectedTime = "";
+                return;
+            }
+            
+            // 從我們儲存的資料中找出選中的那一天
+            const selectedData = availableDatesData.find(item => item.date === selectedDate);
+            
+            if (selectedData) {
+                const props = {
+                    s1: selectedData.time1,
+                    s2: selectedData.time2,
+                    s3: selectedData.time3
+                };
+                displaySlots(selectedDate, props);
+            }
+        }
+
+        // 顯示可選時段
+        function displaySlots(date, props) {
+            const area = document.getElementById('slot-area');
+            const list = document.getElementById('slot-list');
+            const nextBtn = document.getElementById('nextBtn');
+
+            document.getElementById('selected-date-text').innerText = date + " 可預約時段";
+            area.style.display = 'block';
+            list.innerHTML = "";
+            nextBtn.style.display = "none";
+            selectedTime = ""; // 重置選擇
+
+            const times = [
+                { name: "10:00 - 12:00", available: props.s1 },
+                { name: "14:00 - 16:00", available: props.s2 },
+                { name: "19:00 - 21:00", available: props.s3 }
+            ];
+
+            let hasSlot = false;
+            times.forEach(t => {
+                if (t.available) {
+                    hasSlot = true;
+                    // 加入單選框
+                    list.innerHTML += `<div class="slot-item"><label><input type="radio" name="timeSlot" value="${t.name}" onchange="selectTime(this.value)"> ${t.name}</label></div>`;
+                }
+            });
+
+            if (!hasSlot) {
+                list.innerHTML = "<p style='color:red;'>本日時段已被預約額滿</p>";
+            }
+        }
+
+        // 記錄選擇的時間並顯示下一步按鈕
+        function selectTime(time) {
+            selectedTime = time;
+            document.getElementById('nextBtn').style.display = "block";
+        }
+
+        // 切換到表單畫面
+        function goToForm() {
+            document.getElementById('calendar-section').style.display = "none";
+            document.getElementById('form-section').style.display = "block";
+            document.getElementById('display-selected-time').innerText = selectedDate + " " + selectedTime;
+        }
+
+        // 退回日曆畫面
+        function backToCalendar() {
+            document.getElementById('form-section').style.display = "none";
+            document.getElementById('calendar-section').style.display = "block";
+        }
+
+        // 送出最終表單
+        async function submitForm() {
+            const btn = document.getElementById('submitBtn');
+            const name = document.getElementById('name').value;
+            const gender = document.getElementById('gender').value;
+            const birthday = document.getElementById('birthday').value;
+            const phone = document.getElementById('phone').value;
+            const service = document.getElementById('service').value;
+            const experienced = document.getElementById('experienced').value;
+            const message = document.getElementById('message').value;
+
+            if (!name || !gender || !birthday || !phone || !service || !experienced) {
+                alert("請填寫完整必填資訊！");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = "傳送中...";
+
+            // 把「選擇的日期與時間」一起包進去送給 Make
+            const payload = {
+                name: name,
+                gender: gender,
+                birthday: birthday,
+                phone: phone,
+                service: service,
+                experienced: experienced,
+                message: message,
+                bookingDate: selectedDate, // 新增：預約日期
+                bookingTime: selectedTime, // 新增：預約時段
+                timestamp: new Date().toISOString()
+            };
+
+            try {
+                const response = await fetch(SUBMIT_BOOKING_WEBHOOK_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    alert("預約已成功送出！");
+                    liff.closeWindow();
+                } else {
+                    throw new Error("伺服器錯誤");
+                }
+            } catch (error) {
+                alert("送出失敗，請稍後再試。");
+                btn.disabled = false;
+                btn.innerText = "確認送出預約";
+            }
+        }
+    </script>
+</body>
+
+</html>
